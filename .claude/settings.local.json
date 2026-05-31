@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3:*)",
+      "Bash(sed -i '' 's/tuple\\\\[bool, str\\\\]/Tuple[bool, str]/g' /Applications/AiTools/ADBGUI/src/core/adb_manager.py)",
+      "Bash(sed -i '' 's/tuple\\\\[bool, str\\\\]/Tuple[bool, str]/g' /Applications/AiTools/ADBGUI/src/core/device_manager.py)"
+    ]
+  }
+}

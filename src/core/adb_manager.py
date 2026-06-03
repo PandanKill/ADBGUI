@@ -43,11 +43,14 @@ class ADBManager:
                 full_command,
                 shell=True,
                 capture_output=True,
-                text=True,
                 timeout=30
             )
             success = result.returncode == 0
-            output = result.stdout.strip() or result.stderr.strip()
+            # 优先 UTF-8，失败则用 replace 容错
+            output = ''
+            for data in [result.stdout, result.stderr]:
+                if data:
+                    output += data.decode('utf-8', errors='replace').strip()
             return success, output
         except subprocess.TimeoutExpired:
             return False, "Command timeout"
@@ -57,14 +60,14 @@ class ADBManager:
     def connect_device(self, ip: str, port: int = 5555) -> Tuple[bool, str]:
         """连接设备"""
         command = f"connect {ip}:{port}"
-        success, output = self._run_command(command)
-        if success and "connected" in output.lower():
+        _, output = self._run_command(command)
+        if output and ("connected" in output.lower() or "reconnected" in output.lower()):
             return True, f"成功连接到 {ip}:{port}"
-        return False, output
+        return False, output or "连接失败"
 
-    def disconnect_device(self, ip: str, port: int = 5555) -> bool:
+    def disconnect_device(self, serial: str) -> bool:
         """断开设备连接"""
-        command = f"disconnect {ip}:{port}"
+        command = f"disconnect {serial}"
         success, _ = self._run_command(command)
         return success
 
@@ -86,6 +89,7 @@ class ADBManager:
     def get_device_info(self, serial: str) -> Optional[DeviceInfo]:
         """获取设备详细信息"""
         device_name = self._get_device_name(serial)
+        device_serial = self._get_device_serial_number(serial)
         device_ip = self._get_device_ip(serial)
         device_mac = self._get_device_mac(serial)
         android_version = self._get_android_version(serial)
@@ -96,7 +100,7 @@ class ADBManager:
             return None
 
         return DeviceInfo(
-            serial=serial,
+            serial=device_serial,
             name=device_name,
             ip=device_ip,
             mac=device_mac,
@@ -110,6 +114,12 @@ class ADBManager:
         command = f"-s {serial} shell getprop ro.product.model"
         _, output = self._run_command(command)
         return output or "Unknown"
+
+    def _get_device_serial_number(self, serial: str) -> str:
+        """获取设备序列号"""
+        command = f"-s {serial} shell getprop ro.serialno"
+        _, output = self._run_command(command)
+        return output or serial
 
     def _get_device_ip(self, serial: str) -> str:
         """获取设备IP"""
@@ -169,26 +179,34 @@ class ADBManager:
 
     def list_files(self, serial: str, path: str = "/") -> List[Dict]:
         """列出文件"""
-        command = f"-s {serial} shell ls -la {path}"
-        success, output = self._run_command(command)
-        if not success:
-            return []
+        try:
+            command = f"-s {serial} shell ls -1 '{path}'"
+            _, output = self._run_command(command)
+            if not output or 'not found' in output.lower() or 'error' in output.lower():
+                return []
 
-        files = []
-        lines = output.split('\n')
-        for line in lines[1:]:
-            if line.strip() and not line.startswith('total'):
-                parts = line.split()
-                if len(parts) >= 9:
-                    files.append({
-                        'permissions': parts[0],
-                        'owner': parts[1],
-                        'group': parts[2],
-                        'size': parts[3] if parts[3].isdigit() else '0',
-                        'date': ' '.join(parts[4:7]),
-                        'name': ' '.join(parts[8:])
-                    })
-        return files
+            files = []
+            for name in output.strip().split('\n'):
+                name = name.strip()
+                if not name:
+                    continue
+                full = f"{path}/{name}" if path != "/" else f"/{name}"
+                is_dir_cmd = f"-s {serial} shell test -d '{full}' && echo 1 || echo 0"
+                _, is_dir_out = self._run_command(is_dir_cmd)
+                is_dir = is_dir_out.strip() == '1'
+                size_cmd = f"-s {serial} shell stat -c '%s' '{full}' 2>/dev/null"
+                _, size_out = self._run_command(size_cmd)
+                size = size_out.strip() if (size_out and size_out.strip().isdigit()) else '0'
+                files.append({
+                    'name': name,
+                    'is_dir': is_dir,
+                    'permissions': 'd' if is_dir else '-rw-r--r--',
+                    'size': size,
+                    'date': ''
+                })
+            return files
+        except Exception:
+            return []
 
     def push_file(self, serial: str, local_path: str, device_path: str, progress_callback: Optional[Callable[[str, int, int], None]] = None) -> Tuple[bool, str]:
         """上传文件到设备 (adb push)"""
@@ -212,7 +230,8 @@ class ADBManager:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                encoding='utf-8',
+                errors='replace'
             )
 
             output, error = process.communicate()
@@ -231,21 +250,21 @@ class ADBManager:
         try:
             # 确保本地目录存在
             local_dir = os.path.dirname(local_path)
-            if local_dir and not os.path.exists(local_dir):
-                os.makedirs(local_dir)
+            if local_dir:
+                os.makedirs(local_dir, exist_ok=True)
 
-            # 转义路径中的特殊字符
+            # 转义设备路径中的特殊字符
             escaped_device_path = device_path.replace(" ", "\\ ").replace("(", "\\(").replace(")", "\\)")
 
-            command = f"-s {serial} pull {escaped_device_path} \"{local_path}\""
+            command = f"-s {serial} pull \"{escaped_device_path}\" \"{local_path}\""
 
             file_name = os.path.basename(device_path)
 
             if progress_callback:
                 # 获取远程文件大小
-                size_cmd = f"-s {serial} shell stat -c %s {escaped_device_path}"
+                size_cmd = f"-s {serial} shell \"stat -c '%s' '{escaped_device_path}'\""
                 success, size_output = self._run_command(size_cmd)
-                remote_size = int(size_output) if success and size_output.isdigit() else 0
+                remote_size = int(size_output) if success and size_output.strip().isdigit() else 0
                 progress_callback(file_name, 0, remote_size)
 
             process = subprocess.Popen(
@@ -253,7 +272,8 @@ class ADBManager:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                encoding='utf-8',
+                errors='replace'
             )
 
             output, error = process.communicate()
@@ -274,3 +294,52 @@ class ADBManager:
         command = f"-s {serial} shell mkdir -p {escaped_path}"
         success, output = self._run_command(command)
         return success, output
+
+    def list_directory_files(self, serial: str, path: str) -> List[Dict]:
+        """列出目录下所有文件（递归），用于统计"""
+        try:
+            command = f"-s {serial} shell find '{path}' -type f"
+            _, output = self._run_command(command)
+            if not output:
+                return []
+            files = []
+            for line in output.strip().split('\n'):
+                line = line.strip()
+                if line:
+                    files.append(line)
+            return files
+        except Exception:
+            return []
+
+    def pull_directory(self, serial: str, device_dir: str, local_dir: str,
+                       progress_callback: Optional[Callable] = None,
+                       downloaded_counter: Optional[list] = None) -> Tuple[bool, str]:
+        """递归下载整个目录"""
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+            if downloaded_counter is None:
+                downloaded_counter = [0]
+
+            files = self.list_directory_files(serial, device_dir)
+            total = len(files)
+
+            for i, device_file in enumerate(files):
+                device_file = device_file.strip()
+                if not device_file:
+                    continue
+                rel_path = device_file[len(device_dir):].lstrip('/')
+                local_file = os.path.join(local_dir, rel_path)
+                local_file_dir = os.path.dirname(local_file)
+                if local_file_dir:
+                    os.makedirs(local_file_dir, exist_ok=True)
+
+                success, message = self.pull_file(serial, device_file, local_file)
+                if not success:
+                    return False, f"下载失败: {rel_path} - {message}"
+                downloaded_counter[0] += 1
+                if progress_callback:
+                    progress_callback(rel_path, downloaded_counter[0], total)
+
+            return True, f"文件夹下载完成: {total} 个文件"
+        except Exception as e:
+            return False, str(e)

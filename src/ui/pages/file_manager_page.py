@@ -64,7 +64,7 @@ class DragDropTreeWidget(QTreeWidget):
             item = self.itemAt(event.pos())
             if item:
                 file_data = item.data(0, Qt.ItemDataRole.UserRole)
-                if file_data and not file_data.get('is_dir') and not item.text(0).startswith(".."):
+                if file_data and not item.text(0).startswith(".."):
                     self.drag_start_pos = event.pos()
                     self.drag_file_data = file_data
                 else:
@@ -182,12 +182,12 @@ class FileManagerPage(QWidget):
 
         for file_info in files:
             name = file_info['name']
-            is_dir = file_info['permissions'].startswith('d')
+            is_dir = file_info.get('is_dir', False)
 
             item = QTreeWidgetItem([
                 name,
                 self._format_size(file_info['size']),
-                file_info['date']
+                file_info.get('date', '')
             ])
 
             if is_dir:
@@ -249,7 +249,7 @@ class FileManagerPage(QWidget):
             self.refresh_files()
 
     def _on_drag_started(self, file_data: Dict):
-        """拖拽开始 - 下载文件"""
+        """拖拽开始 - 下载文件/文件夹"""
         if not self.current_serial:
             QMessageBox.warning(self, "警告", "请先连接设备")
             return
@@ -257,18 +257,29 @@ class FileManagerPage(QWidget):
         file_name = file_data['name']
         device_path = file_data['full_path']
 
-        # 选择保存位置
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "下载文件",
-            os.path.join(os.path.expanduser("~"), file_name),
-            "所有文件 (*.*)"
-        )
-
-        if not save_path:
-            return
-
-        self._download_file(device_path, save_path, file_name)
+        if file_data.get('is_dir'):
+            # 文件夹：选择保存目录
+            save_path = QFileDialog.getExistingDirectory(
+                self,
+                "保存文件夹",
+                os.path.join(os.path.expanduser("~"), file_name)
+            )
+            if not save_path:
+                return
+            # 将文件夹内容保存到本地目录
+            local_dir = os.path.join(save_path, file_name)
+            self._download_directory(device_path, local_dir, file_name)
+        else:
+            # 文件：选择保存位置
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "下载文件",
+                os.path.join(os.path.expanduser("~"), file_name),
+                "所有文件 (*.*)"
+            )
+            if not save_path:
+                return
+            self._download_file(device_path, save_path, file_name)
 
     def _download_file(self, device_path: str, save_path: str, file_name: str):
         """下载文件"""
@@ -296,6 +307,46 @@ class FileManagerPage(QWidget):
         if success:
             self.status_label.setText(message)
             QMessageBox.information(self, "下载成功", f"文件已保存到:\n{save_path}")
+        else:
+            self.status_label.setText(message)
+            QMessageBox.warning(self, "下载失败", message)
+
+    def _download_directory(self, device_dir: str, local_dir: str, dir_name: str):
+        """下载文件夹（递归）"""
+        self.status_label.setText(f"正在下载文件夹: {dir_name}...")
+
+        progress = QProgressDialog(f"下载文件夹: {dir_name}", "取消", 0, 100, self)
+        progress.setWindowTitle("下载文件夹")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+
+        # 先统计文件总数
+        file_list = self.adb_manager.list_directory_files(self.current_serial, device_dir)
+        total_files = len(file_list)
+        downloaded = [0]
+
+        def progress_callback(name: str, current: int, total: int):
+            if total_files > 0:
+                percent = int((downloaded[0] / total_files) * 100)
+                progress.setValue(percent)
+                progress.setLabelText(f"下载文件夹: {dir_name} ({downloaded[0]}/{total_files})")
+
+        try:
+            success, message = self.adb_manager.pull_directory(
+                self.current_serial,
+                device_dir,
+                local_dir,
+                progress_callback,
+                downloaded
+            )
+        except Exception as e:
+            success = False
+            message = str(e)
+
+        progress.close()
+
+        if success:
+            self.status_label.setText(message)
+            QMessageBox.information(self, "下载成功", f"文件夹已保存到:\n{local_dir}")
         else:
             self.status_label.setText(message)
             QMessageBox.warning(self, "下载失败", message)

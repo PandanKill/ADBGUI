@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         # 左侧设备列表
         self.device_list = DeviceListWidget()
         self.device_list.device_selected.connect(self._on_device_selected)
+        self.device_list.device_disconnected.connect(self._on_device_disconnected)
         device_container = self._create_container("设备列表", self.device_list)
         content_layout.addWidget(device_container, stretch=1)
 
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(tab_names):
             btn = QPushButton(name)
             btn.setCheckable(True)
+            btn.setMinimumWidth(100)
             if i == 0:
                 btn.setChecked(True)
             btn.setStyleSheet("""
@@ -153,6 +155,8 @@ class MainWindow(QMainWindow):
                     padding: 10px 20px;
                     font-size: 14px;
                     background-color: transparent;
+                    min-width: 100px;
+                    min-height: 36px;
                 }
                 QPushButton:checked {
                     border-bottom: 3px solid #0078d4;
@@ -237,6 +241,23 @@ class MainWindow(QMainWindow):
             self.logcat_page.set_device(serial)
             # 更新文件管理页面
             self.file_manager_page.set_device(serial)
+
+    def _on_device_disconnected(self, serial: str):
+        """设备被断开连接"""
+        reply = QMessageBox.warning(
+            self,
+            "断开连接",
+            f"确定要断开设备 {serial} 吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            success = self.device_manager.disconnect(serial)
+            if success:
+                self.check_devices()
+                self.device_info_page.clear_info()
+            else:
+                QMessageBox.warning(self, "失败", f"断开设备失败: {serial}")
 
     def check_devices(self):
         """检查设备连接状态"""

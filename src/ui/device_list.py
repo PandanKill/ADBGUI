@@ -2,7 +2,7 @@
 设备列表组件
 """
 from PyQt5.QtWidgets import (QListWidget, QListWidgetItem, QLabel,
-                             QHBoxLayout, QVBoxLayout, QWidget)
+                             QHBoxLayout, QVBoxLayout, QWidget, QMenu)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 from typing import List
@@ -13,6 +13,7 @@ class DeviceListWidget(QWidget):
     """设备列表组件"""
 
     device_selected = pyqtSignal(str)  # 设备被选中信号
+    device_disconnected = pyqtSignal(str)  # 设备断开信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,6 +32,8 @@ class DeviceListWidget(QWidget):
         # 设备列表
         self.list_widget = QListWidget()
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.list_widget)
 
         self.setLayout(layout)
@@ -53,6 +56,21 @@ class DeviceListWidget(QWidget):
         """设备被点击"""
         serial = item.data(Qt.ItemDataRole.UserRole)
         self.device_selected.emit(serial)
+
+    def _on_context_menu(self, position):
+        """右键菜单"""
+        item = self.list_widget.itemAt(position)
+        if not item:
+            return
+
+        serial = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+
+        disconnect_action = menu.addAction("断开连接")
+        action = menu.exec_(self.list_widget.mapToGlobal(position))
+
+        if action == disconnect_action:
+            self.device_disconnected.emit(serial)
 
     def get_selected_device(self) -> str:
         """获取选中的设备"""
